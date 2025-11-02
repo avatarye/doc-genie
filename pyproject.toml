@@ -1,0 +1,39 @@
+[project]
+name = "doc-genie"
+version = "0.1.0"
+description = "Bidirectional document sync across Obsidian, Notion, and Quip"
+authors = [
+    {name = "Yongye"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "loguru>=0.7",
+    "toml>=0.10",
+    "notion-client>=2.0",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "markdownify>=0.12",
+    "mistune>=3.0",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "black>=24.0",
+    "mypy>=1.8",
+    "pytest-cov>=4.1",
+]
+
+[project.scripts]
+dg = "doc_genie.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/doc_genie"]
