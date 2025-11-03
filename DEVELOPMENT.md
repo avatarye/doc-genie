@@ -1,8 +1,41 @@
 # Doc Genie - Development Plan
 
+## Current Status
+
+**Last Updated:** November 2, 2025
+
+### ✅ Completed Features
+
+- [x] Project setup with `uv` and `pyproject.toml`
+- [x] Configuration management (`config.toml`)
+- [x] State management (per-file `.dg` files)
+- [x] Obsidian client (read markdown, extract media)
+- [x] Notion client (create/update pages, file upload API)
+- [x] Quip client (create/update documents, blob upload, backlink tracking)
+- [x] Media handler (extract `![[]]` and `![]()` formats)
+- [x] Markdown → Notion blocks converter
+- [x] Notion blocks → Quip HTML converter
+- [x] **Quip inline video players** (with server-side thumbnails)
+- [x] **Media deduplication** (SHA256 hash tracking)
+- [x] **Backlink preservation** (find + update external Quip links)
+- [x] CLI commands (`init`, `sync`, `route-add`, `route-list`, `status`)
+- [x] Forward sync: Obsidian → Notion → Quip
+- [x] Console output cleanup (debug-level logging)
+
+### 🚧 In Progress / Planned
+
+- [ ] Reverse sync: Quip → Notion → Obsidian
+- [ ] Multi-part upload for files >20MB
+- [ ] Batch sync (directory mode)
+- [ ] Better error handling and retry logic
+- [ ] Unit tests for converters
+- [ ] Integration tests with mocked APIs
+
 ## Implementation Overview
 
 This document outlines the implementation plan for Doc Genie, a bidirectional document sync tool for Obsidian ↔ Notion ↔ Quip.
+
+**Note:** Most core features are now implemented. Focus has shifted to polish, testing, and reverse sync.
 
 ## Development Environment Setup
 
