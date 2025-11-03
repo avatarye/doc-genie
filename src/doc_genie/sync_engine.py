@@ -387,7 +387,7 @@ class SyncEngine:
             creds = self.config.get_credentials()
 
             # Media directory: _<doc_name>.files/
-            media_dir_name = f"_{title}.files"
+            media_dir_name = f"_{base_title}.files"
             media_dir = filepath.parent / media_dir_name
 
             quip_thread_id = None
