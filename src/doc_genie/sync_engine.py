@@ -25,7 +25,7 @@ class SyncEngine:
         self.converter = MarkdownConverter()
         logger.debug("SyncEngine initialized")
 
-    def sync(self, filepath: Path, route_name: str, direction: str = 'forward', skip_quip: bool = False, skip_notion: bool = False) -> SyncResult:
+    def sync(self, filepath: Path, route_name: str, direction: str = 'forward', skip_quip: bool = False, skip_notion: bool = False, quip_thread_id: str = None) -> SyncResult:
         """
         Sync document through route in specified direction.
 
@@ -35,6 +35,7 @@ class SyncEngine:
             direction: 'forward' (Obsidian → Notion) or 'reverse' (Notion → Obsidian)
             skip_quip: If True, skip Quip sync (forward only)
             skip_notion: If True, skip Notion sync (reverse only)
+            quip_thread_id: Optional Quip thread ID to use directly (reverse only)
 
         Returns:
             SyncResult with operation details
@@ -46,7 +47,7 @@ class SyncEngine:
         if direction == 'forward':
             return self._sync_forward(filepath, route, skip_quip=skip_quip)
         elif direction == 'reverse':
-            return self._sync_reverse(filepath, route, skip_notion=skip_notion)
+            return self._sync_reverse(filepath, route, skip_notion=skip_notion, quip_thread_id=quip_thread_id)
         else:
             raise ValueError(f"Invalid direction: {direction}. Must be 'forward' or 'reverse'")
 
@@ -370,11 +371,17 @@ class SyncEngine:
                 error=str(e)
             )
 
-    def _sync_reverse(self, filepath: Path, route: Route, skip_notion: bool = False) -> SyncResult:
+    def _sync_reverse(self, filepath: Path, route: Route, skip_notion: bool = False, quip_thread_id: str = None) -> SyncResult:
         """Quip/Notion → Obsidian (optionally skip Notion sync).
 
         Search for document by title in Quip first, then Notion.
         Download to local Obsidian, then sync to Notion if source was Quip (unless --no-notion).
+
+        Args:
+            filepath: Path to save document
+            route: Sync route
+            skip_notion: If True, skip Notion sync (Quip → Obsidian only)
+            quip_thread_id: If provided, use this thread ID directly (skip search)
         """
         try:
             # Extract title from filename and generate variations
@@ -390,24 +397,29 @@ class SyncEngine:
             media_dir_name = f"_{base_title}.files"
             media_dir = filepath.parent / media_dir_name
 
-            quip_thread_id = None
             notion_page_id = None
 
-            # Step 1: Try Quip first
-            if route.quip_folder and creds.quip_token:
+            # Step 1: Try Quip first (either with provided thread ID or by searching)
+            if (quip_thread_id or (route.quip_folder and creds.quip_token)):
                 quip = QuipClient(creds.quip_token, creds.quip_base_url)
 
-                # Try each title variation
-                quip_thread_id = None
+                # If thread ID provided, use it directly
                 matched_title = None
-                for title in title_variations:
-                    quip_thread_id = quip.find_document_by_title(route.quip_folder, title)
-                    if quip_thread_id:
-                        matched_title = title
-                        break
+                if quip_thread_id:
+                    logger.info("Using provided Quip thread ID: {}", quip_thread_id[:13] + "...")
+                else:
+                    # Try each title variation
+                    for title in title_variations:
+                        quip_thread_id = quip.find_document_by_title(route.quip_folder, title)
+                        if quip_thread_id:
+                            matched_title = title
+                            break
 
                 if quip_thread_id:
-                    logger.info("✓ Found in Quip with title '{}': {}", matched_title, quip_thread_id[:13] + "...")
+                    if matched_title:
+                        logger.info("✓ Found in Quip with title '{}': {}", matched_title, quip_thread_id[:13] + "...")
+                    else:
+                        logger.info("✓ Using Quip thread: {}", quip_thread_id[:13] + "...")
 
                     # Download from Quip
                     quip_doc = quip.get_document(quip_thread_id)
@@ -421,16 +433,20 @@ class SyncEngine:
                     media_files_state = {}
 
                     for blob_id, filename in blob_map.items():
-                        output_path = media_dir / filename
-                        quip.download_blob(quip_thread_id, blob_id, output_path)
+                        try:
+                            output_path = media_dir / filename
+                            quip.download_blob(quip_thread_id, blob_id, output_path)
 
-                        # Calculate hash
-                        file_hash = hashlib.sha256(output_path.read_bytes()).hexdigest()
-                        media_files_state[f"{media_dir_name}/{filename}"] = {
-                            'hash': file_hash,
-                            'quip_blob_id': blob_id,
-                            'size': str(output_path.stat().st_size)
-                        }
+                            # Calculate hash
+                            file_hash = hashlib.sha256(output_path.read_bytes()).hexdigest()
+                            media_files_state[f"{media_dir_name}/{filename}"] = {
+                                'hash': file_hash,
+                                'quip_blob_id': blob_id,
+                                'size': str(output_path.stat().st_size)
+                            }
+                        except Exception as e:
+                            logger.warning("Failed to download blob {} ({}): {} - Skipping",
+                                         blob_id[:20] + "...", filename, e)
 
                     # Save to Obsidian
                     filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -516,26 +532,30 @@ class SyncEngine:
                                       media_data.get('external', {}).get('url')
 
                             if file_url:
-                                # Generate filename
-                                file_upload_id = media_data.get('file_upload', {}).get('id', '')
-                                filename = f"{block_type}_{media_count}.{file_url.split('.')[-1].split('?')[0]}"
+                                try:
+                                    # Generate filename
+                                    file_upload_id = media_data.get('file_upload', {}).get('id', '')
+                                    filename = f"{block_type}_{media_count}.{file_url.split('.')[-1].split('?')[0]}"
 
-                                # Download file
-                                output_path = media_dir / filename
-                                media_dir.mkdir(parents=True, exist_ok=True)
-                                notion.download_file(file_url, output_path)
+                                    # Download file
+                                    output_path = media_dir / filename
+                                    media_dir.mkdir(parents=True, exist_ok=True)
+                                    notion.download_file(file_url, output_path)
 
-                                # Calculate hash
-                                file_hash = hashlib.sha256(output_path.read_bytes()).hexdigest()
-                                media_files_state[f"{media_dir_name}/{filename}"] = {
-                                    'hash': file_hash,
-                                    'file_upload_id': file_upload_id,
-                                    'size': str(output_path.stat().st_size)
-                                }
+                                    # Calculate hash
+                                    file_hash = hashlib.sha256(output_path.read_bytes()).hexdigest()
+                                    media_files_state[f"{media_dir_name}/{filename}"] = {
+                                        'hash': file_hash,
+                                        'file_upload_id': file_upload_id,
+                                        'size': str(output_path.stat().st_size)
+                                    }
 
-                                # Replace URL in markdown with local path
-                                markdown = markdown.replace(file_url, f"{media_dir_name}/{filename}")
-                                media_count += 1
+                                    # Replace URL in markdown with local path
+                                    markdown = markdown.replace(file_url, f"{media_dir_name}/{filename}")
+                                    media_count += 1
+                                except Exception as e:
+                                    logger.warning("Failed to download media from Notion ({}): {} - Skipping",
+                                                 filename if 'filename' in locals() else file_url, e)
 
                     logger.info("Downloaded {} media files from Notion", media_count)
 

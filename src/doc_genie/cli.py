@@ -287,13 +287,17 @@ def rsync(filepath, route, no_notion):
     """
     Reverse sync: Download document from Quip/Notion to Obsidian
 
-    Searches for document by title in Quip first, then Notion.
+    Accepts either:
+    - Document title (searches by title in Quip/Notion)
+    - Quip URL (extracts thread ID directly)
+
     If found in Quip: Downloads to Obsidian, then syncs to Notion (unless --no-notion).
     If found in Notion: Downloads to Obsidian only.
 
     Examples:
         dg rsync DocumentName.md -r work-docs
-        dg rsync DocumentName.md  # Uses default route
+        dg rsync DocumentName -r work-docs  # .md extension optional
+        dg rsync https://quip-amazon.com/ABC123/Doc-Title -r work-docs
         dg rsync DocumentName.md --no-notion  # Quip to Obsidian only
     """
     try:
@@ -308,6 +312,27 @@ def rsync(filepath, route, no_notion):
                 console.print("[red]✗ No route specified and no default route set[/red]")
                 console.print("  Use: [cyan]dg route-default <route-name>[/cyan] to set a default")
                 console.print("  Or: [cyan]dg rsync <file> -r <route>[/cyan]")
+                raise click.Abort()
+
+        # Check if input is a Quip URL
+        quip_thread_id = None
+        if str(filepath).startswith('http'):
+            # Extract thread ID from Quip URL
+            # Format: https://quip-amazon.com/THREAD_ID/Doc-Title
+            import re
+            match = re.search(r'quip[^/]*/([A-Za-z0-9]+)', str(filepath))
+            if match:
+                quip_thread_id = match.group(1)
+                logger.info("Extracted Quip thread ID from URL: {}", quip_thread_id)
+
+                # Extract title from URL for filename
+                title_match = re.search(r'/([^/]+)$', str(filepath))
+                if title_match:
+                    filepath = title_match.group(1)
+                else:
+                    filepath = quip_thread_id
+            else:
+                console.print(f"[red]✗ Invalid Quip URL: {filepath}[/red]")
                 raise click.Abort()
 
         # Resolve filepath and add .md extension if missing
@@ -337,7 +362,7 @@ def rsync(filepath, route, no_notion):
             transient=True
         ) as progress:
             task = progress.add_task(f"Reverse syncing {filepath.name}...", total=None)
-            result = engine.sync(filepath, route, direction='reverse', skip_notion=no_notion)
+            result = engine.sync(filepath, route, direction='reverse', skip_notion=no_notion, quip_thread_id=quip_thread_id)
             progress.update(task, completed=True)
 
         if result.success:
