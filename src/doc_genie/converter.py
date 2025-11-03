@@ -47,9 +47,9 @@ class MarkdownConverter:
 
             # Code blocks
             elif line.startswith('```'):
-                code_block, lines_consumed = self._parse_code_block(lines[i:])
-                if code_block:
-                    blocks.append(code_block)
+                code_blocks, lines_consumed = self._parse_code_block(lines[i:])
+                if code_blocks:
+                    blocks.extend(code_blocks)  # extend since it's a list now
                 i += max(lines_consumed, 1)  # Always increment at least 1
 
             # Bullet lists
@@ -279,10 +279,10 @@ class MarkdownConverter:
 
         return rich_text if rich_text else [{"type": "text", "text": {"content": text}}]
 
-    def _parse_code_block(self, lines: List[str]) -> tuple[Dict, int]:
-        """Parse code block."""
+    def _parse_code_block(self, lines: List[str]) -> tuple[List[Dict], int]:
+        """Parse code block, splitting into multiple blocks if > 2000 chars."""
         if not lines[0].startswith('```'):
-            return None, 0
+            return [], 0
 
         language = lines[0][3:].strip() or "plain text"
         code_lines = []
@@ -297,13 +297,73 @@ class MarkdownConverter:
 
         code = '\n'.join(code_lines)
 
-        return {
-            "type": "code",
-            "code": {
-                "rich_text": [{"type": "text", "text": {"content": code}}],
-                "language": language
-            }
-        }, consumed
+        # Notion limit: 2000 characters per code block
+        MAX_CODE_LENGTH = 2000
+        blocks = []
+
+        if len(code) <= MAX_CODE_LENGTH:
+            # Single block
+            blocks.append({
+                "type": "code",
+                "code": {
+                    "rich_text": [{"type": "text", "text": {"content": code}}],
+                    "language": language
+                }
+            })
+        else:
+            # Split into multiple blocks
+            # Split by lines to avoid breaking in the middle of a line
+            current_chunk = []
+            current_length = 0
+
+            for line in code_lines:
+                line_length = len(line) + 1  # +1 for newline
+
+                # Check if adding this line would exceed limit
+                if current_chunk and current_length + line_length > MAX_CODE_LENGTH:
+                    # Flush current chunk before adding this line
+                    chunk_code = '\n'.join(current_chunk)
+                    blocks.append({
+                        "type": "code",
+                        "code": {
+                            "rich_text": [{"type": "text", "text": {"content": chunk_code}}],
+                            "language": language
+                        }
+                    })
+                    current_chunk = []
+                    current_length = 0
+
+                # Handle single line longer than limit (split it by characters)
+                if line_length > MAX_CODE_LENGTH:
+                    # Split this long line into chunks
+                    for chunk_start in range(0, len(line), MAX_CODE_LENGTH):
+                        line_chunk = line[chunk_start:chunk_start + MAX_CODE_LENGTH]
+                        blocks.append({
+                            "type": "code",
+                            "code": {
+                                "rich_text": [{"type": "text", "text": {"content": line_chunk}}],
+                                "language": language
+                            }
+                        })
+                else:
+                    # Add line to current chunk
+                    current_chunk.append(line)
+                    current_length += line_length
+
+            # Flush remaining
+            if current_chunk:
+                chunk_code = '\n'.join(current_chunk)
+                blocks.append({
+                    "type": "code",
+                    "code": {
+                        "rich_text": [{"type": "text", "text": {"content": chunk_code}}],
+                        "language": language
+                    }
+                })
+
+            logger.info("Split large code block ({} chars) into {} blocks", len(code), len(blocks))
+
+        return blocks, consumed
 
     def _parse_bullet_list(self, lines: List[str]) -> tuple[Dict, int]:
         """Parse bullet list - return first item, caller handles rest."""
