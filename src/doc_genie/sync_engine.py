@@ -68,6 +68,46 @@ class SyncEngine:
             file_state = FileState(filepath)
             logger.debug("Loaded state from: {}", file_state.state_file_path)
 
+            # Normalize media file locations: move all to _<doc_name>.files/
+            media_dir_name = f"_{filepath.stem}.files"
+            media_dir = filepath.parent / media_dir_name
+            content_updated = False
+
+            if doc.media_files:
+                media_dir.mkdir(exist_ok=True)
+                logger.debug("Normalizing media files to: {}", media_dir)
+
+                for media in doc.media_files:
+                    if media.local_path.exists() and not str(media.local_path).startswith("/missing"):
+                        # Target location in normalized directory
+                        target_path = media_dir / media.filename
+
+                        # Check if file needs to be moved
+                        if media.local_path != target_path:
+                            logger.info("Moving media: {} → {}", media.local_path.name, target_path.relative_to(filepath.parent))
+
+                            # Copy file to target (overwrite if exists)
+                            import shutil
+                            shutil.copy2(media.local_path, target_path)
+
+                            # Update media object to point to new location
+                            old_path = media.local_path
+                            media.local_path = target_path
+
+                            # Update markdown content with new path
+                            old_ref = media.original_ref
+                            new_ref = f"![]({media_dir_name}/{media.filename})"
+
+                            # Handle both wikilink and standard markdown formats
+                            if old_ref != new_ref:
+                                doc.content = doc.content.replace(old_ref, new_ref)
+                                content_updated = True
+
+            # Save updated markdown if paths changed
+            if content_updated:
+                filepath.write_text(doc.content, encoding='utf-8')
+                logger.info("✓ Updated markdown with normalized media paths")
+
             # Handle media files
             media_map_notion = {}
 
@@ -79,13 +119,9 @@ class SyncEngine:
                         file_hash = notion.calculate_file_hash(media.local_path)
                         file_size = media.local_path.stat().st_size
 
-                        # Get relative path from .md file to media file
-                        # This is the key for deduplication across machines
-                        try:
-                            media_relative_path = str(media.local_path.relative_to(filepath.parent))
-                        except ValueError:
-                            # If media is outside document directory, use filename
-                            media_relative_path = media.filename
+                        # Use normalized relative path (all media is now in standard directory)
+                        # Format: _<doc_name>.files/<filename>
+                        media_relative_path = f"{media_dir_name}/{media.filename}"
 
                         # Check if we already uploaded this file (hash comparison)
                         should_upload = True
