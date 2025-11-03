@@ -399,6 +399,17 @@ class SyncEngine:
 
             notion_page_id = None
 
+            # Check if .dg file exists to get saved IDs
+            if not quip_thread_id:
+                from doc_genie.file_state import FileState
+                dg_file = filepath.with_suffix(filepath.suffix + '.dg')
+                if dg_file.exists():
+                    file_state = FileState(filepath)
+                    saved_thread_id = file_state.get_quip_thread_id()
+                    if saved_thread_id:
+                        quip_thread_id = saved_thread_id
+                        logger.info("Found saved Quip thread ID in .dg file: {}", quip_thread_id[:13] + "...")
+
             # Step 1: Try Quip first (either with provided thread ID or by searching)
             if (quip_thread_id or (route.quip_folder and creds.quip_token)):
                 quip = QuipClient(creds.quip_token, creds.quip_base_url)
@@ -406,7 +417,8 @@ class SyncEngine:
                 # If thread ID provided, use it directly
                 matched_title = None
                 if quip_thread_id:
-                    logger.info("Using provided Quip thread ID: {}", quip_thread_id[:13] + "...")
+                    # Thread ID already logged above (either from URL or .dg file)
+                    pass
                 else:
                     # Try each title variation
                     for title in title_variations:

@@ -808,8 +808,8 @@ class MarkdownConverter:
             blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', src)
             if blob_match:
                 blob_id = blob_match.group(1).rstrip('-jpg')  # Remove -jpg suffix for thumbnails
-                # Generate filename from alt or use blob_id
-                filename = f"{alt}.png" if alt != 'image' else f"{blob_id[:20]}.png"
+                # Use blob_id to ensure unique filenames
+                filename = f"image_{blob_id[:12]}.png"
                 blob_map[blob_id] = filename
                 return f"![]({media_dir}/{filename})\n"
             else:
@@ -824,7 +824,8 @@ class MarkdownConverter:
                 blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', href)
                 if blob_match:
                     blob_id = blob_match.group(1)
-                    filename = video_link.get_text() or f"{blob_id[:20]}.mp4"
+                    # Use blob_id to ensure unique filenames
+                    filename = f"video_{blob_id[:12]}.mp4"
                     blob_map[blob_id] = filename
                     return f"![]({media_dir}/{filename})\n"
 
@@ -863,7 +864,10 @@ class MarkdownConverter:
                 blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', src)
                 if blob_match:
                     blob_id = blob_match.group(1).rstrip('-jpg')
-                    filename = f"{alt}.png" if alt != 'image' else f"{blob_id[:20]}.png"
+
+                    # Use blob_id to ensure unique filenames
+                    # Format: image_<blob_prefix>.png
+                    filename = f"image_{blob_id[:12]}.png"
                     blob_map[blob_id] = filename
                     parts.append(f"![]({media_dir}/{filename})")
                 else:
