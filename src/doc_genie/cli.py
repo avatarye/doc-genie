@@ -206,13 +206,15 @@ def config_show():
 @cli.command()
 @click.argument('filepath', type=click.Path())
 @click.option('--route', '-r', help='Named route to use (uses default if not specified)')
-def sync(filepath, route):
+@click.option('--no-quip', is_flag=True, help='Skip Quip sync (Obsidian → Notion only)')
+def sync(filepath, route, no_quip):
     """
-    Sync document from Obsidian to Notion
+    Sync document from Obsidian to Notion (and optionally Quip)
 
     Examples:
         dg sync document.md -r work-docs
         dg sync document.md  # Uses default route
+        dg sync document.md --no-quip  # Skip Quip, sync to Notion only
         dg sync /path/to/note.md --route personal
     """
     try:
@@ -262,7 +264,7 @@ def sync(filepath, route):
             transient=True  # Progress disappears when done, logs remain
         ) as progress:
             task = progress.add_task(f"Syncing {filepath.name}...", total=None)
-            result = engine.sync(filepath, route, direction='forward')
+            result = engine.sync(filepath, route, direction='forward', skip_quip=no_quip)
             progress.update(task, completed=True)
 
         if result.success:
@@ -273,6 +275,73 @@ def sync(filepath, route):
 
     except Exception as e:
         logger.exception("Sync failed: {}", e)
+        console.print(f"[red]✗ Error: {e}[/red]")
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument('filepath', type=click.Path())
+@click.option('--route', '-r', help='Named route to use (uses default if not specified)')
+@click.option('--no-notion', is_flag=True, help='Skip Notion sync (Quip → Obsidian only)')
+def rsync(filepath, route, no_notion):
+    """
+    Reverse sync: Download document from Quip/Notion to Obsidian
+
+    Searches for document by title in Quip first, then Notion.
+    If found in Quip: Downloads to Obsidian, then syncs to Notion (unless --no-notion).
+    If found in Notion: Downloads to Obsidian only.
+
+    Examples:
+        dg rsync DocumentName.md -r work-docs
+        dg rsync DocumentName.md  # Uses default route
+        dg rsync DocumentName.md --no-notion  # Quip to Obsidian only
+    """
+    try:
+        config = Config()
+        state = State()
+        engine = SyncEngine(config, state)
+
+        # Use default route if not specified
+        if not route:
+            route = config.get_default_route()
+            if not route:
+                console.print("[red]✗ No route specified and no default route set[/red]")
+                console.print("  Use: [cyan]dg route-default <route-name>[/cyan] to set a default")
+                console.print("  Or: [cyan]dg rsync <file> -r <route>[/cyan]")
+                raise click.Abort()
+
+        # Resolve filepath
+        filepath = Path(filepath)
+        if not filepath.is_absolute():
+            # Get route to resolve relative paths
+            route_config = config.get_route(route)
+            if not route_config:
+                console.print(f"[red]✗ Route not found: {route}[/red]")
+                raise click.Abort()
+
+            # For reverse sync, filepath might not exist yet
+            # Resolve relative to route's source directory
+            filepath = (Path(route_config.source) / filepath).resolve()
+
+        # Use Progress with transient=True
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            task = progress.add_task(f"Reverse syncing {filepath.name}...", total=None)
+            result = engine.sync(filepath, route, direction='reverse', skip_notion=no_notion)
+            progress.update(task, completed=True)
+
+        if result.success:
+            if result.media_count > 0:
+                console.print(f"  [dim]Media: {result.media_count} files[/dim]")
+        else:
+            console.print(f"\n[red]✗ Reverse sync failed: {result.error}[/red]")
+
+    except Exception as e:
+        logger.exception("Reverse sync failed: {}", e)
         console.print(f"[red]✗ Error: {e}[/red]")
         raise click.Abort()
 

@@ -25,7 +25,7 @@ class SyncEngine:
         self.converter = MarkdownConverter()
         logger.debug("SyncEngine initialized")
 
-    def sync(self, filepath: Path, route_name: str, direction: str = 'forward') -> SyncResult:
+    def sync(self, filepath: Path, route_name: str, direction: str = 'forward', skip_quip: bool = False, skip_notion: bool = False) -> SyncResult:
         """
         Sync document through route in specified direction.
 
@@ -33,6 +33,8 @@ class SyncEngine:
             filepath: Path to document
             route_name: Named route to use
             direction: 'forward' (Obsidian → Notion) or 'reverse' (Notion → Obsidian)
+            skip_quip: If True, skip Quip sync (forward only)
+            skip_notion: If True, skip Notion sync (reverse only)
 
         Returns:
             SyncResult with operation details
@@ -42,14 +44,14 @@ class SyncEngine:
             raise ValueError(f"Route not found: {route_name}")
 
         if direction == 'forward':
-            return self._sync_forward(filepath, route)
+            return self._sync_forward(filepath, route, skip_quip=skip_quip)
         elif direction == 'reverse':
-            return self._sync_reverse(filepath, route)
+            return self._sync_reverse(filepath, route, skip_notion=skip_notion)
         else:
             raise ValueError(f"Invalid direction: {direction}. Must be 'forward' or 'reverse'")
 
-    def _sync_forward(self, filepath: Path, route: Route) -> SyncResult:
-        """Obsidian → Notion (simplified, no Quip yet)."""
+    def _sync_forward(self, filepath: Path, route: Route, skip_quip: bool = False) -> SyncResult:
+        """Obsidian → Notion → Quip (optionally skip Quip)."""
         try:
             # Initialize clients
             obsidian = ObsidianClient(route.source_path)
@@ -208,9 +210,9 @@ class SyncEngine:
                 notion_page_id = notion.create_page(doc.title, notion_blocks)
                 logger.info("✓ Created new Notion page: {}", notion_page_id[:13] + "...")
 
-            # Sync to Quip if configured
+            # Sync to Quip if configured (unless --no-quip)
             quip_thread_id = None
-            if route.quip_folder and creds.quip_token:
+            if route.quip_folder and creds.quip_token and not skip_quip:
                 logger.info("Syncing to Quip...")
                 quip = QuipClient(creds.quip_token, creds.quip_base_url)
 
@@ -353,11 +355,11 @@ class SyncEngine:
                 error=str(e)
             )
 
-    def _sync_reverse(self, filepath: Path, route: Route) -> SyncResult:
-        """Quip/Notion → Obsidian.
+    def _sync_reverse(self, filepath: Path, route: Route, skip_notion: bool = False) -> SyncResult:
+        """Quip/Notion → Obsidian (optionally skip Notion sync).
 
         Search for document by title in Quip first, then Notion.
-        Download to local Obsidian, then sync to Notion if source was Quip.
+        Download to local Obsidian, then sync to Notion if source was Quip (unless --no-notion).
         """
         try:
             # Extract title from filename
@@ -428,19 +430,30 @@ class SyncEngine:
                     file_state.save()
                     logger.info("✓ Saved .dg file: {}", file_state.state_file_path)
 
-                    # Now run forward sync to push to Notion
-                    logger.info("Running forward sync to Notion...")
-                    forward_result = self._sync_forward(filepath, route)
+                    # Now run forward sync to push to Notion (unless --no-notion)
+                    if not skip_notion:
+                        logger.info("Running forward sync to Notion...")
+                        forward_result = self._sync_forward(filepath, route, skip_quip=True)
 
-                    return SyncResult(
-                        success=True,
-                        route_name=route.name,
-                        direction='reverse',
-                        source_path=filepath,
-                        notion_page_id=forward_result.notion_page_id,
-                        quip_thread_id=quip_thread_id,
-                        media_count=len(blob_map)
-                    )
+                        return SyncResult(
+                            success=True,
+                            route_name=route.name,
+                            direction='reverse',
+                            source_path=filepath,
+                            notion_page_id=forward_result.notion_page_id,
+                            quip_thread_id=quip_thread_id,
+                            media_count=len(blob_map)
+                        )
+                    else:
+                        logger.info("Skipping Notion sync (--no-notion)")
+                        return SyncResult(
+                            success=True,
+                            route_name=route.name,
+                            direction='reverse',
+                            source_path=filepath,
+                            quip_thread_id=quip_thread_id,
+                            media_count=len(blob_map)
+                        )
 
             # Step 2: If not in Quip, try Notion
             if not quip_thread_id and creds.notion_token:
