@@ -105,12 +105,20 @@ class SyncEngine:
 
                             # Update markdown content with new path
                             old_ref = media.original_ref
-                            new_ref = f"![]({media_dir_name}/{media.filename})"
 
-                            # Handle both wikilink and standard markdown formats
+                            # Determine new reference format based on original
+                            if old_ref.startswith('![['):
+                                # Keep Obsidian wikilink format (Obsidian auto-finds files in vault)
+                                new_ref = f"![[{media.filename}]]"
+                            else:
+                                # Use standard markdown format with proper path
+                                new_ref = f"![]({media_dir_name}/{media.filename})"
+
+                            # Replace old reference with new one
                             if old_ref != new_ref:
                                 doc.content = doc.content.replace(old_ref, new_ref)
                                 content_updated = True
+                                logger.debug("Updated reference: {} → {}", old_ref, new_ref)
 
             # Save updated markdown if paths changed
             if content_updated:
