@@ -92,6 +92,13 @@ class SyncEngine:
                             import shutil
                             shutil.copy2(media.local_path, target_path)
 
+                            # Delete old file after successful copy
+                            try:
+                                media.local_path.unlink()
+                                logger.debug("✓ Deleted old file: {}", media.local_path)
+                            except Exception as e:
+                                logger.warning("Could not delete old file {}: {}", media.local_path, e)
+
                             # Update media object to point to new location
                             old_path = media.local_path
                             media.local_path = target_path
