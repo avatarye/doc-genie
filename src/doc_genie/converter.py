@@ -586,3 +586,168 @@ class MarkdownConverter:
     def _extract_notion_text(self, rich_text: List[Dict]) -> str:
         """Extract plain text from Notion rich_text array."""
         return ''.join(item.get('text', {}).get('content', '') for item in rich_text)
+
+    def notion_blocks_to_quip_html(self, blocks: List[Dict], media_map: Dict[str, str] = None, media_filenames: Dict[str, str] = None) -> str:
+        """Convert Notion blocks to Quip HTML.
+
+        Args:
+            blocks: List of Notion block objects
+            media_map: Mapping of file_upload_id to Quip blob URLs
+                      Format: {file_upload_id: quip_blob_url}
+            media_filenames: Mapping of file_upload_id to original filename
+                           Format: {file_upload_id: filename}
+
+        Returns:
+            Quip-formatted HTML string
+        """
+        if media_map is None:
+            media_map = {}
+        if media_filenames is None:
+            media_filenames = {}
+
+        html_parts = []
+
+        for block in blocks:
+            block_type = block.get('type')
+
+            if block_type and block_type.startswith('heading_'):
+                level = int(block_type.split('_')[1])
+                text = self._notion_richtext_to_html(block[block_type].get('rich_text', []))
+                html_parts.append(f"<h{level}>{text}</h{level}>")
+
+            elif block_type == 'paragraph':
+                text = self._notion_richtext_to_html(block['paragraph'].get('rich_text', []))
+                html_parts.append(f"<p>{text}</p>")
+
+            elif block_type == 'code':
+                code = self._extract_notion_text(block['code'].get('rich_text', []))
+                # Quip uses <pre> for code blocks
+                html_parts.append(f"<pre>{self._escape_html(code)}</pre>")
+
+            elif block_type == 'bulleted_list_item':
+                text = self._notion_richtext_to_html(block['bulleted_list_item'].get('rich_text', []))
+                html_parts.append(f"<ul><li>{text}</li></ul>")
+
+            elif block_type == 'numbered_list_item':
+                text = self._notion_richtext_to_html(block['numbered_list_item'].get('rich_text', []))
+                html_parts.append(f"<ol><li>{text}</li></ol>")
+
+            elif block_type in ['image', 'video', 'audio', 'pdf', 'file']:
+                # Get file_upload_id from block
+                media_data = block.get(block_type, {})
+                file_upload = media_data.get('file_upload', {})
+                file_upload_id = file_upload.get('id')
+
+                if file_upload_id and file_upload_id in media_map:
+                    blob_url = media_map[file_upload_id]
+                    filename = media_filenames.get(file_upload_id, "media")
+                    logger.debug("Converting {} block with file_upload_id={} to HTML with blob_url={}",
+                                block_type, file_upload_id[:20] + "...", blob_url)
+                    if block_type == 'image':
+                        # Use Quip's image format with div wrapper, alt text
+                        html_parts.append(f"<div data-section-style='11' style='max-width:100%' class=''><img src=\"{blob_url}\" width='800' height='600' alt=\"{filename}\"></img></div>")
+                    elif block_type == 'video':
+                        # Use Quip's inline video player format (with auto-generated thumbnail)
+                        # Quip generates thumbnails server-side: add -jpg suffix to blob URL
+                        thumbnail_url = f"{blob_url}-jpg"
+                        video_url = f"https://quip-amazon.com{blob_url}"
+
+                        # Exact format from manually-inserted videos
+                        html_parts.append(
+                            f"<div style='display:flex;flex-direction:column;align-items:center;justify-content:center'>"
+                            f"<div data-section-style='11' style='max-width:100%' class=''>"
+                            f"<img src='{thumbnail_url}' width='800' height='600'></img>"
+                            f"</div>"
+                            f"<span>Video: <a href='{video_url}' target='_blank'>{filename}</a></span>"
+                            f"</div>"
+                        )
+                        logger.debug("Using Quip inline video player format: {}", filename)
+                    else:
+                        # For other files, create a link
+                        html_parts.append(f'<p><a href="{blob_url}">View file</a></p>')
+                else:
+                    # Fallback: show placeholder
+                    logger.warning("No blob URL found for {} block with file_upload_id={} (media_map has {} keys)",
+                                  block_type, file_upload_id, len(media_map))
+                    html_parts.append(f'<p>[{block_type.upper()}]</p>')
+
+            elif block_type == 'table':
+                table_html = self._notion_table_to_html(block['table'])
+                html_parts.append(table_html)
+
+        return '\n'.join(html_parts)
+
+    def _notion_richtext_to_html(self, rich_text: List[Dict]) -> str:
+        """Convert Notion rich_text array to HTML with formatting.
+
+        Handles bold, italic, code, strikethrough, underline, and links.
+        """
+        html_parts = []
+
+        for item in rich_text:
+            text_obj = item.get('text', {})
+            content = text_obj.get('content', '')
+            link = text_obj.get('link')
+
+            annotations = item.get('annotations', {})
+
+            # Apply formatting
+            result = self._escape_html(content)
+
+            if annotations.get('bold'):
+                result = f"<b>{result}</b>"
+            if annotations.get('italic'):
+                result = f"<i>{result}</i>"
+            if annotations.get('code'):
+                result = f"<code>{result}</code>"
+            if annotations.get('strikethrough'):
+                result = f"<s>{result}</s>"
+            if annotations.get('underline'):
+                result = f"<u>{result}</u>"
+
+            # Apply link if present
+            if link:
+                url = link.get('url', '')
+                result = f'<a href="{url}">{result}</a>'
+
+            html_parts.append(result)
+
+        return ''.join(html_parts)
+
+    def _notion_table_to_html(self, table_data: Dict) -> str:
+        """Convert Notion table to HTML table."""
+        rows = table_data.get('children', [])
+        if not rows:
+            return ""
+
+        html = ['<table border="1">']
+
+        for i, row_block in enumerate(rows):
+            if row_block.get('type') != 'table_row':
+                continue
+
+            cells = row_block.get('table_row', {}).get('cells', [])
+            is_header = (i == 0 and table_data.get('has_column_header'))
+
+            tag = 'th' if is_header else 'td'
+            row_html = ['<tr>']
+
+            for cell in cells:
+                cell_html = self._notion_richtext_to_html(cell)
+                row_html.append(f"<{tag}>{cell_html}</{tag}>")
+
+            row_html.append('</tr>')
+            html.append(''.join(row_html))
+
+        html.append('</table>')
+        return '\n'.join(html)
+
+    @staticmethod
+    def _escape_html(text: str) -> str:
+        """Escape HTML special characters."""
+        return (text
+                .replace('&', '&amp;')
+                .replace('<', '&lt;')
+                .replace('>', '&gt;')
+                .replace('"', '&quot;')
+                .replace("'", '&#39;'))

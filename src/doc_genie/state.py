@@ -23,6 +23,7 @@ class DocumentState:
     #   "filename.png": {
     #       "hash": "sha256_hash",
     #       "file_upload_id": "notion_file_id",
+    #       "quip_blob_id": "quip_blob_id",
     #       "size": "12345"
     #   }
     # }

@@ -17,6 +17,50 @@ class NotionClient:
         self.database_id = database_id
         logger.debug("NotionClient initialized: database={}", database_id)
 
+    def find_page_by_title(self, title: str) -> Optional[str]:
+        """
+        Find page in database by exact title match.
+
+        Args:
+            title: Page title to search for
+
+        Returns:
+            Page ID if found, None otherwise
+        """
+        try:
+            # Search for pages with matching title in this database
+            # Note: Notion search is case-insensitive and fuzzy
+            response = self.client.search(
+                query=title,
+                filter={"value": "page", "property": "object"}
+            )
+
+            results = response.get('results', [])
+
+            # Filter to only pages in our database with exact title match
+            for page in results:
+                # Check if page is in our database
+                parent = page.get('parent', {})
+                if parent.get('type') == 'database_id' and parent.get('database_id') == self.database_id:
+                    # Check for exact title match
+                    page_title = ''
+                    title_prop = page.get('properties', {}).get('Name', {})
+                    if title_prop.get('type') == 'title':
+                        title_array = title_prop.get('title', [])
+                        page_title = ''.join([t.get('text', {}).get('content', '') for t in title_array])
+
+                    if page_title == title:
+                        page_id = page['id']
+                        logger.info("Found existing page by title '{}': {}", title, page_id[:13] + "...")
+                        return page_id
+
+            logger.debug("No existing page found with title: {}", title)
+            return None
+
+        except Exception as e:
+            logger.warning("Failed to search for title '{}': {}", title, e)
+            return None
+
     def create_page(self, title: str, blocks: List[Dict]) -> str:
         """Create page in database."""
         try:
@@ -50,15 +94,49 @@ class NotionClient:
             logger.error("Failed to archive page: {}", e)
             raise
 
-    def update_page_content(self, page_id: str, blocks: List[Dict]):
+    def update_page_content(self, page_id: str, blocks: List[Dict], title: Optional[str] = None):
         """
-        Replace page content (delete all blocks, add new ones).
+        Replace page content using erase_content API (fast, preserves page ID).
 
-        Note: This is slow as it deletes blocks one by one.
-        Consider using archive + create new page instead.
+        Uses Notion's erase_content parameter to clear all blocks atomically,
+        then appends new content. Much faster than deleting blocks one-by-one.
+
+        Args:
+            page_id: Notion page ID
+            blocks: New blocks to add
+            title: Optional new title (if None, title unchanged)
         """
+        logger.info("Updating Notion page: page_id={}, blocks={}", page_id[:13] + "...", len(blocks))
+
+        try:
+            # Step 1: Erase all existing content atomically
+            # Uses the erase_content parameter added in Notion API 2024
+            update_payload = {"erase_content": True}
+            if title:
+                update_payload["properties"] = {
+                    "Name": {"title": [{"text": {"content": title}}]}
+                }
+
+            self.client.pages.update(page_id, **update_payload)
+            logger.debug("✓ Erased existing content")
+
+            # Step 2: Append new blocks (in batches of 100)
+            self.append_blocks(page_id, blocks)
+            logger.info("✓ Page content updated successfully")
+
+        except Exception as e:
+            logger.error("Failed to update Notion page: {}", e)
+            raise
+
+    def update_page_content_slow(self, page_id: str, blocks: List[Dict]):
+        """
+        DEPRECATED: Replace page content (delete blocks one-by-one).
+
+        This method is slow - use update_page_content() instead which uses
+        the erase_content API parameter for atomic deletion.
+        """
+        logger.warning("Using DEPRECATED slow update method - use update_page_content() instead")
         logger.info("Updating Notion page content: page_id={}, blocks={}", page_id, len(blocks))
-        logger.warning("Deleting blocks one by one is slow - consider using archive + recreate")
 
         try:
             # Get existing blocks
