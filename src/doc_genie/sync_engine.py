@@ -377,9 +377,11 @@ class SyncEngine:
         Download to local Obsidian, then sync to Notion if source was Quip (unless --no-notion).
         """
         try:
-            # Extract title from filename
-            title = filepath.stem
-            logger.info("Reverse sync: Looking for document '{}'", title)
+            # Extract title from filename and generate variations
+            base_title = filepath.stem
+            title_variations = self._generate_title_variations(base_title)
+            logger.info("Reverse sync: Looking for document '{}'", base_title)
+            logger.debug("Will try title variations: {}", title_variations)
 
             # Initialize credentials
             creds = self.config.get_credentials()
@@ -394,10 +396,18 @@ class SyncEngine:
             # Step 1: Try Quip first
             if route.quip_folder and creds.quip_token:
                 quip = QuipClient(creds.quip_token, creds.quip_base_url)
-                quip_thread_id = quip.find_document_by_title(route.quip_folder, title)
+
+                # Try each title variation
+                quip_thread_id = None
+                matched_title = None
+                for title in title_variations:
+                    quip_thread_id = quip.find_document_by_title(route.quip_folder, title)
+                    if quip_thread_id:
+                        matched_title = title
+                        break
 
                 if quip_thread_id:
-                    logger.info("✓ Found in Quip: {}", quip_thread_id[:13] + "...")
+                    logger.info("✓ Found in Quip with title '{}': {}", matched_title, quip_thread_id[:13] + "...")
 
                     # Download from Quip
                     quip_doc = quip.get_document(quip_thread_id)
@@ -473,10 +483,18 @@ class SyncEngine:
             # Step 2: If not in Quip, try Notion
             if not quip_thread_id and creds.notion_token:
                 notion = NotionClient(creds.notion_token, route.notion_database)
-                notion_page_id = notion.find_page_by_title(title)
+
+                # Try each title variation
+                notion_page_id = None
+                matched_title = None
+                for title in title_variations:
+                    notion_page_id = notion.find_page_by_title(title)
+                    if notion_page_id:
+                        matched_title = title
+                        break
 
                 if notion_page_id:
-                    logger.info("✓ Found in Notion: {}", notion_page_id[:13] + "...")
+                    logger.info("✓ Found in Notion with title '{}': {}", matched_title, notion_page_id[:13] + "...")
 
                     # Download from Notion
                     blocks = notion.get_blocks(notion_page_id)
@@ -554,7 +572,7 @@ class SyncEngine:
                     )
 
             # Step 3: Not found anywhere
-            raise ValueError(f"Document '{title}' not found in Quip or Notion")
+            raise ValueError(f"Document '{base_title}' not found in Quip or Notion (tried variations: {', '.join(title_variations)})")
 
         except Exception as e:
             logger.exception("Reverse sync failed: {}", e)
@@ -565,6 +583,36 @@ class SyncEngine:
                 source_path=filepath,
                 error=str(e)
             )
+
+    def _generate_title_variations(self, title: str) -> list[str]:
+        """Generate title variations for flexible matching.
+
+        Args:
+            title: Base title from filename
+
+        Returns:
+            List of title variations to try, in order of preference
+        """
+        variations = [title]  # Always try exact match first
+
+        # If title has hyphens, try with spaces
+        if '-' in title:
+            variations.append(title.replace('-', ' '))
+
+        # If title has underscores, try with spaces
+        if '_' in title:
+            variations.append(title.replace('_', ' '))
+
+        # Try removing hyphens entirely
+        if '-' in title:
+            variations.append(title.replace('-', ''))
+
+        # Try removing underscores entirely
+        if '_' in title:
+            variations.append(title.replace('_', ''))
+
+        logger.debug("Generated {} title variations from '{}'", len(variations), title)
+        return variations
 
     def _calculate_hash(self, content: str) -> str:
         """Calculate SHA256 hash of content."""

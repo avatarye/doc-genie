@@ -310,8 +310,14 @@ def rsync(filepath, route, no_notion):
                 console.print("  Or: [cyan]dg rsync <file> -r <route>[/cyan]")
                 raise click.Abort()
 
-        # Resolve filepath
+        # Resolve filepath and add .md extension if missing
         filepath = Path(filepath)
+
+        # Add .md extension if not present
+        if not filepath.suffix:
+            filepath = Path(str(filepath) + '.md')
+            logger.debug("Added .md extension: {}", filepath)
+
         if not filepath.is_absolute():
             # Get route to resolve relative paths
             route_config = config.get_route(route)
