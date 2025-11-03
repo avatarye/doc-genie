@@ -315,5 +315,257 @@ def status(filepath, route):
         console.print(f"[yellow]Document not synced in any route[/yellow]")
 
 
+@cli.command()
+@click.argument('folder_id')
+def quip_list(folder_id):
+    """List documents in a Quip folder (performance test)"""
+    config = Config()
+    creds = config.get_credentials()
+
+    if not creds.quip_token:
+        console.print("[red]✗ Quip token not configured. Run 'dg init' first.[/red]")
+        raise click.Abort()
+
+    try:
+        import time
+        from doc_genie.quip_api import QuipAPI
+
+        quip_api = QuipAPI(access_token=creds.quip_token, base_url=creds.quip_base_url)
+
+        console.print(f"[blue]Listing documents in folder: {folder_id}[/blue]\n")
+
+        # Time the folder fetch
+        start_time = time.time()
+        folder = quip_api.get_folder(folder_id)
+        fetch_time = time.time() - start_time
+
+        console.print(f"[green]✓ Folder fetched in {fetch_time:.3f}s[/green]\n")
+
+        # Show folder info
+        folder_info = folder.get('folder', {})
+        console.print(f"[cyan]Folder: {folder_info.get('title', 'Unknown')}[/cyan]")
+
+        children = folder.get('children', [])
+        console.print(f"[cyan]Total items: {len(children)}[/cyan]\n")
+
+        # Collect thread IDs for batch fetch
+        thread_ids = [child['thread_id'] for child in children if child.get('thread_id')]
+
+        # Batch fetch thread details for title lookup
+        threads_data = {}
+        fetch_details_time = 0
+        if thread_ids:
+            console.print(f"[yellow]Fetching details for {len(thread_ids)} documents...[/yellow]")
+            start_fetch = time.time()
+            threads_data = quip_api.get_threads(thread_ids[:100])  # Limit to 100 for performance test
+            fetch_details_time = time.time() - start_fetch
+            console.print(f"[green]✓ Thread details fetched in {fetch_details_time:.3f}s[/green]\n")
+
+        # Create table of documents
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Title", style="green", width=50)
+        table.add_column("Thread ID", style="yellow")
+        table.add_column("Type", style="blue")
+
+        doc_count = 0
+        folder_count = 0
+
+        for child in children[:50]:  # Limit to first 50 for display
+            if child.get('thread_id'):
+                # It's a document
+                thread_id = child['thread_id']
+                thread_info = threads_data.get(thread_id, {})
+                title = thread_info.get('thread', {}).get('title', 'Untitled')
+                table.add_row(title, thread_id, 'document')
+                doc_count += 1
+            elif child.get('folder_id'):
+                # It's a subfolder
+                folder_id_child = child['folder_id']
+                title = child.get('folder', {}).get('title', 'Untitled')
+                table.add_row(f"📁 {title}", folder_id_child, 'folder')
+                folder_count += 1
+
+        console.print(table)
+
+        if len(children) > 50:
+            console.print(f"\n[dim]Showing first 50 of {len(children)} items[/dim]")
+
+        console.print(f"\n[cyan]Documents: {doc_count}[/cyan]")
+        console.print(f"[cyan]Folders: {folder_count}[/cyan]")
+
+        total_time = fetch_time + fetch_details_time
+        console.print(f"\n[yellow]Performance:[/yellow]")
+        console.print(f"  Folder list: {fetch_time:.3f}s")
+        console.print(f"  Thread details: {fetch_details_time:.3f}s ({len(thread_ids)}/batch)")
+        console.print(f"  Total: {total_time:.3f}s for {len(children)} items")
+
+    except Exception as e:
+        logger.exception("Failed to list folder: {}", e)
+        console.print(f"[red]✗ Failed to list folder: {e}[/red]")
+        raise click.Abort()
+
+
+@cli.command()
+def quip_test():
+    """Test Quip API connectivity"""
+    config = Config()
+    creds = config.get_credentials()
+
+    if not creds.quip_token:
+        console.print("[red]✗ Quip token not configured. Run 'dg init' first.[/red]")
+        raise click.Abort()
+
+    try:
+        import urllib.request
+        import urllib.error
+
+        base_url = creds.quip_base_url
+        token = creds.quip_token
+
+        # Test URL that the API client constructs
+        test_url = f"{base_url}/1/users/current"
+
+        console.print("[blue]Testing Quip API connectivity...[/blue]\n")
+        console.print(f"[dim]Base URL: {base_url}[/dim]")
+        console.print(f"[dim]Test endpoint: {test_url}[/dim]")
+        console.print(f"[dim]Token: {token[:20]}...[/dim]\n")
+
+        # Make request with authentication
+        request = urllib.request.Request(test_url)
+        request.add_header("Authorization", f"Bearer {token}")
+
+        try:
+            console.print("[yellow]Sending request...[/yellow]")
+            response = urllib.request.urlopen(request, timeout=10)
+            data = response.read().decode('utf-8')
+
+            console.print("[green]✓ Connection successful![/green]\n")
+
+            import json
+            user_data = json.loads(data)
+            console.print(f"[cyan]User: {user_data.get('name', 'Unknown')}[/cyan]")
+            console.print(f"[cyan]Email: {user_data.get('email', 'Unknown')}[/cyan]")
+            console.print(f"[cyan]User ID: {user_data.get('id', 'Unknown')}[/cyan]")
+
+        except urllib.error.HTTPError as e:
+            console.print(f"[red]✗ HTTP Error {e.code}: {e.reason}[/red]\n")
+            console.print("[yellow]Try these alternatives:[/yellow]")
+
+            # Try alternative API paths
+            alternatives = [
+                f"{base_url}/api/1/users/current",
+                f"{base_url}/api/users/current",
+                f"{base_url}/1/users/current",
+            ]
+
+            for alt_url in alternatives:
+                console.print(f"  • {alt_url}")
+
+            console.print("\n[dim]You can test these URLs in your browser with the token in dev tools[/dim]")
+            raise
+
+    except Exception as e:
+        console.print(f"[red]✗ Connection failed: {e}[/red]")
+        raise click.Abort()
+
+
+@cli.command()
+@click.option('--debug', is_flag=True, help='Show raw user data for debugging')
+def quip_folders(debug):
+    """List your Quip folders to find folder IDs"""
+    config = Config()
+    creds = config.get_credentials()
+
+    if not creds.quip_token:
+        console.print("[red]✗ Quip token not configured. Run 'dg init' first.[/red]")
+        raise click.Abort()
+
+    try:
+        from doc_genie.platforms.quip_client import QuipClient
+        from doc_genie.quip_api import QuipAPI
+
+        # Show connection info
+        console.print(f"[dim]Connecting to: {creds.quip_base_url}[/dim]")
+        console.print(f"[dim]Token: {creds.quip_token[:20]}...[/dim]\n")
+
+        quip_api = QuipAPI(access_token=creds.quip_token, base_url=creds.quip_base_url)
+
+        # Get authenticated user to find folder IDs
+        console.print("[blue]Fetching your Quip folders...[/blue]\n")
+        try:
+            user = quip_api.get_authenticated_user()
+        except Exception as e:
+            console.print(f"[red]✗ Failed to connect to Quip API[/red]")
+            console.print(f"[yellow]Error: {e}[/yellow]")
+            console.print(f"\n[dim]Possible issues:[/dim]")
+            console.print(f"  • Check if base_url is correct: {creds.quip_base_url}")
+            console.print(f"  • Check if API token is valid")
+            console.print(f"  • Check if Quip server is accessible")
+            console.print(f"  • Try accessing {creds.quip_base_url}/api/users/current in browser")
+            raise
+
+        # Debug mode: show raw user data
+        if debug:
+            import json
+            console.print("[yellow]Raw user data:[/yellow]")
+            console.print(json.dumps(user, indent=2))
+            return
+
+        # Create a table to display folders
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Folder Name", style="green", width=40)
+        table.add_column("Folder ID", style="yellow")
+        table.add_column("Type", style="blue")
+
+        # Helper to safely get folder
+        def add_folder_row(name, folder_id, folder_type):
+            try:
+                folder = quip_api.get_folder(folder_id)
+                table.add_row(name, folder_id, folder_type)
+                return folder
+            except Exception as e:
+                logger.debug(f"Could not fetch folder {folder_id}: {e}")
+                return None
+
+        # Add starred folder
+        if user.get("starred_folder_id"):
+            add_folder_row("⭐ Starred", user["starred_folder_id"], "starred")
+
+        # Add private folder and its children
+        private_folder = None
+        if user.get("private_folder_id"):
+            private_folder = add_folder_row("🔒 Private", user["private_folder_id"], "private")
+
+        # Add desktop folder and its children
+        desktop_folder = None
+        if user.get("desktop_folder_id"):
+            desktop_folder = add_folder_row("💻 Desktop", user["desktop_folder_id"], "desktop")
+
+        # Add archive folder
+        if user.get("archive_folder_id"):
+            add_folder_row("📦 Archive", user["archive_folder_id"], "archive")
+
+        # List children of folders
+        for parent_folder, parent_name in [(private_folder, "Private"), (desktop_folder, "Desktop")]:
+            if parent_folder and parent_folder.get("children"):
+                for child in parent_folder["children"]:
+                    if child.get("folder_id"):
+                        try:
+                            child_folder = quip_api.get_folder(child["folder_id"])
+                            title = child_folder.get("folder", {}).get("title", "Untitled")
+                            table.add_row(f"  └─ {title}", child["folder_id"], f"{parent_name.lower()}/group")
+                        except Exception as e:
+                            logger.debug(f"Could not fetch child folder {child['folder_id']}: {e}")
+
+        console.print(table)
+        console.print("\n[green]✓ Use the Folder ID when configuring routes[/green]")
+        console.print("\n[dim]Tip: Your private groups are usually in the Private or Desktop folders[/dim]")
+
+    except Exception as e:
+        logger.exception("Failed to list Quip folders: {}", e)
+        console.print(f"[red]✗ Failed to list folders: {e}[/red]")
+        raise click.Abort()
+
+
 if __name__ == '__main__':
     cli()

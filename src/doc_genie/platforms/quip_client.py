@@ -307,6 +307,35 @@ class QuipClient:
             logger.error("Failed to upload blob {}: {}", file_path.name, e)
             raise
 
+    def download_blob(self, thread_id: str, blob_id: str, output_path: Path):
+        """Download blob from Quip to local file.
+
+        Args:
+            thread_id: Quip thread ID
+            blob_id: Blob ID
+            output_path: Path to save the downloaded file
+        """
+        try:
+            logger.debug("Downloading blob: thread={}, blob={}, output={}",
+                        thread_id[:13] + "...", blob_id[:20] + "...", output_path.name)
+
+            # get_blob returns a file-like object
+            blob_data = self.client.get_blob(thread_id, blob_id)
+
+            # Ensure parent directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write to file
+            with open(output_path, 'wb') as f:
+                f.write(blob_data.read())
+
+            file_size = output_path.stat().st_size
+            logger.info("✓ Downloaded blob: {} ({:.2f} MB)", output_path.name, file_size / (1024 * 1024))
+
+        except Exception as e:
+            logger.error("Failed to download blob {}: {}", blob_id[:20] + "...", e)
+            raise
+
     def get_blob_url(self, thread_id: str, blob_id: str) -> str:
         """Get URL for a blob (DEPRECATED - use URL from upload_blob response instead).
 

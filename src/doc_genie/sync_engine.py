@@ -318,9 +318,189 @@ class SyncEngine:
             )
 
     def _sync_reverse(self, filepath: Path, route: Route) -> SyncResult:
-        """Notion → Obsidian (not implemented yet)."""
-        logger.warning("Reverse sync not implemented yet")
-        raise NotImplementedError("Reverse sync (Notion → Obsidian) not implemented yet")
+        """Quip/Notion → Obsidian.
+
+        Search for document by title in Quip first, then Notion.
+        Download to local Obsidian, then sync to Notion if source was Quip.
+        """
+        try:
+            # Extract title from filename
+            title = filepath.stem
+            logger.info("Reverse sync: Looking for document '{}'", title)
+
+            # Initialize credentials
+            creds = self.config.get_credentials()
+
+            # Media directory: _<doc_name>.files/
+            media_dir_name = f"_{title}.files"
+            media_dir = filepath.parent / media_dir_name
+
+            quip_thread_id = None
+            notion_page_id = None
+
+            # Step 1: Try Quip first
+            if route.quip_folder and creds.quip_token:
+                quip = QuipClient(creds.quip_token, creds.quip_base_url)
+                quip_thread_id = quip.find_document_by_title(route.quip_folder, title)
+
+                if quip_thread_id:
+                    logger.info("✓ Found in Quip: {}", quip_thread_id[:13] + "...")
+
+                    # Download from Quip
+                    quip_doc = quip.get_document(quip_thread_id)
+                    quip_html = quip_doc.get('html', '')
+
+                    # Convert HTML → Markdown with media extraction
+                    markdown, blob_map = self.converter.quip_html_to_markdown(quip_html, media_dir_name)
+
+                    # Download all blobs
+                    logger.info("Downloading {} media files from Quip", len(blob_map))
+                    media_files_state = {}
+
+                    for blob_id, filename in blob_map.items():
+                        output_path = media_dir / filename
+                        quip.download_blob(quip_thread_id, blob_id, output_path)
+
+                        # Calculate hash
+                        file_hash = hashlib.sha256(output_path.read_bytes()).hexdigest()
+                        media_files_state[f"{media_dir_name}/{filename}"] = {
+                            'hash': file_hash,
+                            'quip_blob_id': blob_id,
+                            'size': str(output_path.stat().st_size)
+                        }
+
+                    # Save to Obsidian
+                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                    filepath.write_text(markdown, encoding='utf-8')
+                    logger.info("✓ Saved to Obsidian: {}", filepath)
+
+                    # Create .dg file
+                    from doc_genie.file_state import FileState
+                    file_state = FileState(filepath)
+                    file_state.update_quip_thread_id(quip_thread_id)
+                    file_state.update_last_synced()
+
+                    # Update media metadata
+                    for media_path, media_info in media_files_state.items():
+                        file_state.update_media(
+                            media_path,
+                            file_hash=media_info['hash'],
+                            quip_blob_id=media_info.get('quip_blob_id'),
+                            size=int(media_info['size'])
+                        )
+
+                    file_state.save()
+                    logger.info("✓ Saved .dg file: {}", file_state.state_file_path)
+
+                    # Now run forward sync to push to Notion
+                    logger.info("Running forward sync to Notion...")
+                    forward_result = self._sync_forward(filepath, route)
+
+                    return SyncResult(
+                        success=True,
+                        route_name=route.name,
+                        direction='reverse',
+                        source_path=filepath,
+                        notion_page_id=forward_result.notion_page_id,
+                        quip_thread_id=quip_thread_id,
+                        media_count=len(blob_map)
+                    )
+
+            # Step 2: If not in Quip, try Notion
+            if not quip_thread_id and creds.notion_token:
+                notion = NotionClient(creds.notion_token, route.notion_database)
+                notion_page_id = notion.find_page_by_title(title)
+
+                if notion_page_id:
+                    logger.info("✓ Found in Notion: {}", notion_page_id[:13] + "...")
+
+                    # Download from Notion
+                    blocks = notion.get_blocks(notion_page_id)
+
+                    # Convert blocks → Markdown
+                    markdown = self.converter.notion_blocks_to_markdown(blocks)
+
+                    # Extract and download media
+                    media_files_state = {}
+                    media_count = 0
+
+                    for block in blocks:
+                        block_type = block.get('type')
+                        if block_type in ['image', 'video', 'audio', 'pdf', 'file']:
+                            media_data = block.get(block_type, {})
+
+                            # Get file URL
+                            file_url = media_data.get('file', {}).get('url') or \
+                                      media_data.get('external', {}).get('url')
+
+                            if file_url:
+                                # Generate filename
+                                file_upload_id = media_data.get('file_upload', {}).get('id', '')
+                                filename = f"{block_type}_{media_count}.{file_url.split('.')[-1].split('?')[0]}"
+
+                                # Download file
+                                output_path = media_dir / filename
+                                media_dir.mkdir(parents=True, exist_ok=True)
+                                notion.download_file(file_url, output_path)
+
+                                # Calculate hash
+                                file_hash = hashlib.sha256(output_path.read_bytes()).hexdigest()
+                                media_files_state[f"{media_dir_name}/{filename}"] = {
+                                    'hash': file_hash,
+                                    'file_upload_id': file_upload_id,
+                                    'size': str(output_path.stat().st_size)
+                                }
+
+                                # Replace URL in markdown with local path
+                                markdown = markdown.replace(file_url, f"{media_dir_name}/{filename}")
+                                media_count += 1
+
+                    logger.info("Downloaded {} media files from Notion", media_count)
+
+                    # Save to Obsidian
+                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                    filepath.write_text(markdown, encoding='utf-8')
+                    logger.info("✓ Saved to Obsidian: {}", filepath)
+
+                    # Create .dg file
+                    from doc_genie.file_state import FileState
+                    file_state = FileState(filepath)
+                    file_state.update_notion_page_id(notion_page_id)
+                    file_state.update_last_synced()
+
+                    # Update media metadata
+                    for media_path, media_info in media_files_state.items():
+                        file_state.update_media(
+                            media_path,
+                            file_hash=media_info['hash'],
+                            file_upload_id=media_info.get('file_upload_id'),
+                            size=int(media_info['size'])
+                        )
+
+                    file_state.save()
+                    logger.info("✓ Saved .dg file: {}", file_state.state_file_path)
+
+                    return SyncResult(
+                        success=True,
+                        route_name=route.name,
+                        direction='reverse',
+                        source_path=filepath,
+                        notion_page_id=notion_page_id,
+                        media_count=media_count
+                    )
+
+            # Step 3: Not found anywhere
+            raise ValueError(f"Document '{title}' not found in Quip or Notion")
+
+        except Exception as e:
+            logger.exception("Reverse sync failed: {}", e)
+            return SyncResult(
+                success=False,
+                route_name=route.name,
+                direction='reverse',
+                source_path=filepath,
+                error=str(e)
+            )
 
     def _calculate_hash(self, content: str) -> str:
         """Calculate SHA256 hash of content."""

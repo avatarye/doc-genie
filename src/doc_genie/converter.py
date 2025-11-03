@@ -1,9 +1,11 @@
 """Format converter between Markdown, Notion blocks, and Quip HTML."""
 
 from typing import List, Dict
+from pathlib import Path
 from loguru import logger
 import mistune
 import re
+from bs4 import BeautifulSoup
 
 
 class MarkdownConverter:
@@ -741,6 +743,136 @@ class MarkdownConverter:
 
         html.append('</table>')
         return '\n'.join(html)
+
+    def quip_html_to_markdown(self, html: str, media_dir: Path) -> tuple[str, Dict[str, str]]:
+        """Convert Quip HTML to Markdown.
+
+        Args:
+            html: Quip HTML content
+            media_dir: Directory name for media files (e.g., "_DocumentName.files")
+
+        Returns:
+            Tuple of (markdown_content, blob_map)
+            blob_map: {blob_id: filename} for downloaded media files
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+        markdown_lines = []
+        blob_map = {}  # {blob_id: filename}
+
+        # Find all top-level elements in the document
+        # Quip wraps content in sections with ids
+        body = soup.find('body') or soup
+
+        for element in body.find_all(recursive=False):
+            md_text = self._element_to_markdown(element, media_dir, blob_map)
+            if md_text:
+                markdown_lines.append(md_text)
+
+        return '\n'.join(markdown_lines), blob_map
+
+    def _element_to_markdown(self, element, media_dir: Path, blob_map: Dict[str, str]) -> str:
+        """Convert a single HTML element to markdown."""
+        if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            level = int(element.name[1])
+            text = element.get_text().strip()
+            return f"{'#' * level} {text}\n"
+
+        elif element.name == 'p':
+            text = self._extract_formatted_text(element, media_dir, blob_map)
+            return f"{text}\n"
+
+        elif element.name == 'ul':
+            items = []
+            for li in element.find_all('li', recursive=False):
+                text = self._extract_formatted_text(li, media_dir, blob_map)
+                items.append(f"- {text}")
+            return '\n'.join(items) + '\n'
+
+        elif element.name == 'ol':
+            items = []
+            for i, li in enumerate(element.find_all('li', recursive=False), 1):
+                text = self._extract_formatted_text(li, media_dir, blob_map)
+                items.append(f"{i}. {text}")
+            return '\n'.join(items) + '\n'
+
+        elif element.name == 'pre':
+            code = element.get_text()
+            return f"```\n{code}\n```\n"
+
+        elif element.name == 'img':
+            # Extract blob reference
+            src = element.get('src', '')
+            alt = element.get('alt', 'image')
+
+            # Quip blob URLs: /blob/{thread_id}/{blob_id} or full URLs
+            blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', src)
+            if blob_match:
+                blob_id = blob_match.group(1).rstrip('-jpg')  # Remove -jpg suffix for thumbnails
+                # Generate filename from alt or use blob_id
+                filename = f"{alt}.png" if alt != 'image' else f"{blob_id[:20]}.png"
+                blob_map[blob_id] = filename
+                return f"![]({media_dir}/{filename})\n"
+            else:
+                # External URL
+                return f"![]({src})\n"
+
+        elif element.name == 'div':
+            # Check if it's a video container (Quip's inline video format)
+            video_link = element.find('a', href=re.compile(r'/blob/'))
+            if video_link:
+                href = video_link.get('href', '')
+                blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', href)
+                if blob_match:
+                    blob_id = blob_match.group(1)
+                    filename = video_link.get_text() or f"{blob_id[:20]}.mp4"
+                    blob_map[blob_id] = filename
+                    return f"![]({media_dir}/{filename})\n"
+
+            # Otherwise, process children
+            parts = []
+            for child in element.children:
+                if hasattr(child, 'name'):
+                    md = self._element_to_markdown(child, media_dir, blob_map)
+                    if md:
+                        parts.append(md)
+            return ''.join(parts)
+
+        return ''
+
+    def _extract_formatted_text(self, element, media_dir: Path, blob_map: Dict[str, str]) -> str:
+        """Extract text with inline formatting (bold, italic, links, images)."""
+        parts = []
+
+        for child in element.children:
+            if isinstance(child, str):
+                parts.append(child)
+            elif child.name == 'b' or child.name == 'strong':
+                parts.append(f"**{child.get_text()}**")
+            elif child.name == 'i' or child.name == 'em':
+                parts.append(f"*{child.get_text()}*")
+            elif child.name == 'code':
+                parts.append(f"`{child.get_text()}`")
+            elif child.name == 'a':
+                text = child.get_text()
+                href = child.get('href', '')
+                parts.append(f"[{text}]({href})")
+            elif child.name == 'img':
+                # Inline image
+                src = child.get('src', '')
+                alt = child.get('alt', 'image')
+                blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', src)
+                if blob_match:
+                    blob_id = blob_match.group(1).rstrip('-jpg')
+                    filename = f"{alt}.png" if alt != 'image' else f"{blob_id[:20]}.png"
+                    blob_map[blob_id] = filename
+                    parts.append(f"![]({media_dir}/{filename})")
+                else:
+                    parts.append(f"![]({src})")
+            else:
+                # Recursively extract from other elements
+                parts.append(self._extract_formatted_text(child, media_dir, blob_map))
+
+        return ''.join(parts)
 
     @staticmethod
     def _escape_html(text: str) -> str:
