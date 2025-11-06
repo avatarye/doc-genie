@@ -377,10 +377,13 @@ class MarkdownConverter:
         else:
             return None, 0
 
+        # Parse inline formatting (bold, italic, code, links)
+        rich_text = self._parse_inline_formatting(text)
+
         return {
             "type": "bulleted_list_item",
             "bulleted_list_item": {
-                "rich_text": [{"type": "text", "text": {"content": text}}]
+                "rich_text": rich_text
             }
         }, 1
 
@@ -394,10 +397,13 @@ class MarkdownConverter:
 
         text = match.group(1).strip()
 
+        # Parse inline formatting (bold, italic, code, links)
+        rich_text = self._parse_inline_formatting(text)
+
         return {
             "type": "numbered_list_item",
             "numbered_list_item": {
-                "rich_text": [{"type": "text", "text": {"content": text}}]
+                "rich_text": rich_text
             }
         }, 1
 
@@ -503,8 +509,8 @@ class MarkdownConverter:
         blocks = []
 
         # Find all image references
-        # Standard markdown: ![alt](url)
-        for match in re.finditer(r'!\[([^\]]*)\]\(([^\)]+)\)', line):
+        # Standard markdown: ![alt](url) or ![alt](<url>)
+        for match in re.finditer(r'!\[([^\]]*)\]\(<?([^>\)]+)>?\)', line):
             alt = match.group(1)
             url = match.group(2)
 
@@ -823,6 +829,8 @@ class MarkdownConverter:
         # Quip wraps content in sections with ids
         body = soup.find('body') or soup
 
+        # Process all elements recursively (not just direct children)
+        # This ensures we find images nested in divs, tables, etc.
         for element in body.find_all(recursive=False):
             md_text = self._element_to_markdown(element, media_dir, blob_map)
             if md_text:
@@ -843,14 +851,20 @@ class MarkdownConverter:
 
         elif element.name == 'ul':
             items = []
-            for li in element.find_all('li', recursive=False):
+            # Use recursive=True to find all <li> elements, including nested ones
+            for li in element.find_all('li', recursive=True):
                 text = self._extract_formatted_text(li, media_dir, blob_map)
-                items.append(f"- {text}")
+                # If the item is ONLY an image, don't prefix with dash
+                if text.strip().startswith('![') and text.strip().endswith(')'):
+                    items.append(text.strip())
+                else:
+                    items.append(f"- {text}")
             return '\n'.join(items) + '\n'
 
         elif element.name == 'ol':
             items = []
-            for i, li in enumerate(element.find_all('li', recursive=False), 1):
+            # Use recursive=True to find all <li> elements, including nested ones
+            for i, li in enumerate(element.find_all('li', recursive=True), 1):
                 text = self._extract_formatted_text(li, media_dir, blob_map)
                 items.append(f"{i}. {text}")
             return '\n'.join(items) + '\n'
@@ -858,6 +872,10 @@ class MarkdownConverter:
         elif element.name == 'pre':
             code = element.get_text()
             return f"```\n{code}\n```\n"
+
+        elif element.name == 'table':
+            # Convert HTML table to markdown table
+            return self._html_table_to_markdown(element)
 
         elif element.name == 'img':
             # Extract blob reference
@@ -867,11 +885,19 @@ class MarkdownConverter:
             # Quip blob URLs: /blob/{thread_id}/{blob_id} or full URLs
             blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', src)
             if blob_match:
-                blob_id = blob_match.group(1).rstrip('-jpg')  # Remove -jpg suffix for thumbnails
+                blob_id = blob_match.group(1)
+                # Remove -jpg suffix for thumbnails (use removesuffix, not rstrip!)
+                if blob_id.endswith('-jpg'):
+                    blob_id = blob_id[:-4]
                 # Use blob_id to ensure unique filenames
                 filename = f"image_{blob_id[:12]}.png"
                 blob_map[blob_id] = filename
-                return f"![]({media_dir}/{filename})\n"
+                # Use angle brackets for paths with spaces (Obsidian/markdown standard)
+                img_path = f"{media_dir}/{filename}"
+                if ' ' in str(media_dir):
+                    return f"![](<{img_path}>)\n"
+                else:
+                    return f"![]({img_path})\n"
             else:
                 # External URL
                 return f"![]({src})\n"
@@ -900,6 +926,49 @@ class MarkdownConverter:
 
         return ''
 
+    def _html_table_to_markdown(self, table_element) -> str:
+        """Convert HTML table to markdown table."""
+        rows = []
+
+        # Process all rows (both thead and tbody)
+        all_rows = table_element.find_all('tr')
+
+        if not all_rows:
+            return ''
+
+        for row in all_rows:
+            cells = row.find_all(['th', 'td'])
+            cell_texts = []
+
+            for cell in cells:
+                # Skip Quip's row number column (has gray background or class="empty")
+                style = cell.get('style', '')
+                cell_class = cell.get('class', [])
+
+                # Skip if it's the row number column (gray background)
+                if 'background-color:#f0f0f0' in style or 'empty' in cell_class:
+                    continue
+
+                # Extract text, preserving inline formatting where possible
+                text = cell.get_text(strip=True)
+                # Escape pipe characters in cell content
+                text = text.replace('|', '\\|')
+                cell_texts.append(text)
+
+            if cell_texts:
+                rows.append('| ' + ' | '.join(cell_texts) + ' |')
+
+        if not rows:
+            return ''
+
+        # Add separator after first row (header)
+        if len(rows) > 1:
+            num_cols = len(rows[0].split('|')) - 2  # Subtract the empty strings from split
+            separator = '| ' + ' | '.join(['---'] * num_cols) + ' |'
+            rows.insert(1, separator)
+
+        return '\n'.join(rows) + '\n\n'
+
     def _extract_formatted_text(self, element, media_dir: Path, blob_map: Dict[str, str]) -> str:
         """Extract text with inline formatting (bold, italic, links, images)."""
         parts = []
@@ -923,13 +992,21 @@ class MarkdownConverter:
                 alt = child.get('alt', 'image')
                 blob_match = re.search(r'/blob/[^/]+/([^/\?]+)', src)
                 if blob_match:
-                    blob_id = blob_match.group(1).rstrip('-jpg')
+                    blob_id = blob_match.group(1)
+                    # Remove -jpg suffix for thumbnails (use proper suffix removal, not rstrip!)
+                    if blob_id.endswith('-jpg'):
+                        blob_id = blob_id[:-4]
 
                     # Use blob_id to ensure unique filenames
                     # Format: image_<blob_prefix>.png
                     filename = f"image_{blob_id[:12]}.png"
                     blob_map[blob_id] = filename
-                    parts.append(f"![]({media_dir}/{filename})")
+                    # Use angle brackets for paths with spaces (Obsidian/markdown standard)
+                    img_path = f"{media_dir}/{filename}"
+                    if ' ' in str(media_dir):
+                        parts.append(f"![](<{img_path}>)")
+                    else:
+                        parts.append(f"![]({img_path})")
                 else:
                     parts.append(f"![]({src})")
             else:

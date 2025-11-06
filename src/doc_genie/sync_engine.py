@@ -340,17 +340,19 @@ class SyncEngine:
             # Build URLs for console output
             notion_url = f"https://www.notion.so/{notion_page_id.replace('-', '')}"
 
+            logger.success("✓ Synced successfully!")
+            logger.info("  → Obsidian: {}", filepath)
+            logger.info("  → Notion:   {}", notion_url)
+
             if quip_thread_id:
                 # Get Quip document to extract the link
                 quip_doc = quip.get_document(quip_thread_id)
                 quip_url = quip_doc.get('thread', {}).get('link', f"{creds.quip_base_url}/{quip_thread_id}")
+                logger.info("  → Quip:     {}", quip_url)
 
-                logger.success("✓ Synced successfully!")
-                logger.info("  → Notion: {}", notion_url)
-                logger.info("  → Quip:   {}", quip_url)
-            else:
-                logger.success("✓ Synced successfully!")
-                logger.info("  → Notion: {}", notion_url)
+            logger.info("")
+            if doc.media_files:
+                logger.info("  Media: {} files", len(doc.media_files))
             return SyncResult(
                 success=True,
                 route_name=route.name,
@@ -488,6 +490,12 @@ class SyncEngine:
                         logger.info("Running forward sync to Notion...")
                         forward_result = self._sync_forward(filepath, route, skip_quip=True)
 
+                        # Show final summary with all links (forward_result already showed them)
+                        # Just add Quip link which wasn't in forward sync
+                        quip_doc = quip.get_document(quip_thread_id)
+                        quip_url = quip_doc.get('thread', {}).get('link', f"{creds.quip_base_url}/{quip_thread_id}")
+                        logger.info("  → Quip:     {}", quip_url)
+
                         return SyncResult(
                             success=True,
                             route_name=route.name,
@@ -499,6 +507,17 @@ class SyncEngine:
                         )
                     else:
                         logger.info("Skipping Notion sync (--no-notion)")
+
+                        # Show summary for rsync without Notion
+                        logger.success("✓ Synced successfully!")
+                        logger.info("  → Obsidian: {}", filepath)
+                        quip_doc = quip.get_document(quip_thread_id)
+                        quip_url = quip_doc.get('thread', {}).get('link', f"{creds.quip_base_url}/{quip_thread_id}")
+                        logger.info("  → Quip:     {}", quip_url)
+                        logger.info("")
+                        if len(blob_map) > 0:
+                            logger.info("  Media: {} files", len(blob_map))
+
                         return SyncResult(
                             success=True,
                             route_name=route.name,

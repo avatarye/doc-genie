@@ -13,7 +13,7 @@ class MediaHandler:
 
     # Regex patterns for both link types
     WIKILINK_PATTERN = r'!\[\[([^\]]+)\]\]'  # ![[image.png]]
-    MARKDOWN_PATTERN = r'!\[([^\]]*)\]\(([^\)]+)\)'  # ![alt](path)
+    MARKDOWN_PATTERN = r'!\[([^\]]*)\]\(<?([^>\)]+)>?\)'  # ![alt](path) or ![alt](<path>)
 
     def __init__(self, vault_path: Path):
         self.vault_path = vault_path
